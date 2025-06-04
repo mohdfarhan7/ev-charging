@@ -1,31 +1,29 @@
 import asyncio
 import logging
 from datetime import datetime
-
 from fastapi import FastAPI, HTTPException
 import httpx
-
 import websockets
 from ocpp.routing import on
 from ocpp.v16 import ChargePoint as OcppChargePoint
 from ocpp.v16.enums import RegistrationStatus
 from ocpp.v16 import call_result
+import threading
 
-# -------------------- Logging --------------------
+# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ev-charger")
 
-# -------------------- FastAPI Setup --------------------
 app = FastAPI()
 
-# -------------------- Charger Status Storage --------------------
+# Charger Status Storage
 charger_status = {
     "charger_id": "EV123",
     "status": "Available",
     "current_session": None
 }
 
-# -------------------- OCPP ChargePoint --------------------
+# OCPP ChargePoint
 class ChargePoint(OcppChargePoint):
     @on("BootNotification")
     async def on_boot_notification(self, charge_point_model, charge_point_vendor, **kwargs):
@@ -41,7 +39,7 @@ class ChargePoint(OcppChargePoint):
         logger.info(f"Heartbeat received from {self.id}")
         return call_result.HeartbeatPayload(current_time=datetime.utcnow().isoformat())
 
-# -------------------- WebSocket Server for OCPP --------------------
+# OCPP WebSocket Server
 async def ocpp_server(websocket, path):
     charge_point_id = path.strip("/")
     cp = ChargePoint(charge_point_id, websocket)
@@ -49,7 +47,7 @@ async def ocpp_server(websocket, path):
 
 def start_ocpp_server():
     async def run():
-        server = await websockets.serve(ocpp_server,"0.0.0.0", 9000, subprotocols=["ocpp1.6"] )
+        server = await websockets.serve(ocpp_server, "0.0.0.0", 9000, subprotocols=["ocpp1.6"])
         logger.info("OCPP Server running on ws://0.0.0.0:9000")
         await server.wait_closed()
 
@@ -57,7 +55,11 @@ def start_ocpp_server():
     asyncio.set_event_loop(loop)
     loop.run_until_complete(run())
 
-# -------------------- FastAPI Endpoints --------------------
+# Run OCPP Server in background
+ocpp_thread = threading.Thread(target=start_ocpp_server, daemon=True)
+ocpp_thread.start()
+
+# FastAPI Endpoints
 @app.get("/")
 def home():
     return {"message": "EV Charger Simulator Running"}
@@ -111,7 +113,7 @@ def stop_session(charger_id: str):
     if charger_status["current_session"]["charger_id"] != charger_id:
         raise HTTPException(status_code=400, detail="Charger ID does not match the active session")
     session = charger_status["current_session"]
-    session["end_time"] = datetime.utcnow().isoformat()  # Store the end time
+    session["end_time"] = datetime.utcnow().isoformat()
     charger_status["status"] = "Available"
     charger_status["current_session"] = None
     logger.info(f"Stopped charging session for user {session['charger_id']}")
@@ -149,9 +151,3 @@ async def get_charger_metadata():
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         raise HTTPException(status_code=500, detail="Unexpected error occurred")
-
-# -------------------- Run OCPP Server in Background --------------------
-import threading
-
-ocpp_thread = threading.Thread(target=start_ocpp_server, daemon=True)
-ocpp_thread.start()
